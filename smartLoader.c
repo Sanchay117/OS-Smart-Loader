@@ -27,6 +27,8 @@ typedef struct{
 } SegmentMap;
 
 SegmentMap segments_for_cleanup[MAX_SEGMENTS];
+Elf32_Phdr* segments[MAX_SEGMENTS];
+int ptr = 0;
 
 int fd;
 void* entry_pt_addr;
@@ -49,7 +51,7 @@ void read_elf_header(){
 void loader_cleanup() {
   // free(phdr); -> Already Done!
   free(ehdr);
-  for(int i = 0;i<MAX_SEGMENTS;i++){
+  for(int i = 0;i<seg_ptr;i++){
     if(segments_for_cleanup[i].address!=NULL){
       if(munmap(segments_for_cleanup[i].address, segments_for_cleanup[i].segment_size)==-1){
         printf("Munmap for freeing segment memory failed");
@@ -83,103 +85,46 @@ void read_programm_header(const int i,const unsigned short int programm_header_s
   // printf("----------------------\n");
 }
 
-void handle_page_fault(int signum, siginfo_t *info, void *context) {
-  void *fault_addr = info->si_addr;
-  printf("PAGE FAULT\n");
-  SegmentMap *target_segment = NULL;
+// Check if offset seeking was successful
+void check_offset( off_t new_position ){
+  if ( new_position == -1 )
+  {
+    printf("Failed to seek offset\n");
+    exit(1);
+  }
+}
 
-  // Step 1: Find the segment that contains the fault address
-  for (int i = 0; i < seg_ptr; i++) {
-    void *segment_start = segments_for_cleanup[i].address;
-    size_t segment_size = segments_for_cleanup[i].segment_size;
+void handle_page_fault(int signum,siginfo_t *sig,void* context){
+  printf("PAGE FAULT / SEG FAULT\n");
+  // no_of_faults++;
+  for (int i = 0; i < ehdr->e_phnum; i++) {
+    if ((sig -> si_addr) >= (segments[i]->p_vaddr) && (sig->si_addr) < segments[i]->p_vaddr + segments[i]->p_memsz) {
+      printf("Fault address is : %p\n", sig->si_addr);
 
-    if ((uintptr_t)fault_addr >= (uintptr_t)segment_start &&
-      (uintptr_t)fault_addr < (uintptr_t)segment_start + segment_size) {
-      target_segment = &segments_for_cleanup[i];
+      // Attempt to allocate memory using mmap
+      void* virtual_mem = mmap(sig->si_addr, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+
+      if (virtual_mem == MAP_FAILED) {
+        // mmap failed
+        printf("mmap failed\n");
+        exit(1);
+      }
+      check_offset(lseek(fd, 0, SEEK_SET) );
+      check_offset(lseek(fd, segments[i]->p_offset, SEEK_SET));
+      ssize_t bytes_read = read(fd, virtual_mem, PAGE_SIZE);
+
+      printf("size of phdr segment is %d\n", phdr[i].p_memsz);
+      printf("Number of bytes read: %d\n", bytes_read);
+
+      if (bytes_read < 0) {
+        printf("Less than 0 bytes read\n");
+        exit(1);
+      }
+      // add_fragmentation(bytes_read);
+      // pages++;
       break;
     }
   }
-
-  if (!target_segment) {
-    fprintf(stderr, "Fault address does not belong to any segment.\n");
-    loader_cleanup();
-    exit(EXIT_FAILURE);
-  }
-
-  // Step 2: Align fault address to the page boundary
-  void *page_start = (void *)((uintptr_t)fault_addr & ~(PAGE_SIZE - 1));
-
-  // Step 3: Calculate offset within segment and remaining size
-  size_t offset_within_segment = (uintptr_t)page_start - (uintptr_t)target_segment->address;
-  size_t remaining_size = target_segment->segment_size - offset_within_segment;
-  size_t alloc_size = (remaining_size > PAGE_SIZE) ? PAGE_SIZE : remaining_size;
-
-  // Step 4: Map the memory page
-  if (mmap(page_start, alloc_size, PROT_READ | PROT_WRITE | PROT_EXEC,MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == MAP_FAILED) {
-    perror("mmap failed");
-    exit(EXIT_FAILURE);
-  }
-
-  // Step 5: Copy data from the ELF file if within the file size
-  if (offset_within_segment < target_segment->file_size) {
-    size_t copy_size = (alloc_size > target_segment->file_size - offset_within_segment) 
-    ? target_segment->file_size - offset_within_segment
-    : alloc_size;
-
-    memcpy(page_start, (char*)target_segment->file_data + offset_within_segment, copy_size);
-
-    // Zero out any remaining space if `alloc_size` is greater than `copy_size`
-    if (alloc_size > copy_size) {
-      memset((char*)page_start + copy_size, 0, alloc_size - copy_size);
-    }
-  } else {
-    // If beyond file size (for .bss-like sections), zero out the allocated memory
-    memset(page_start, 0, alloc_size);
-  }
-
-  printf("Mapped and loaded page at %p (size: %zu bytes) for segment starting at %p\n",page_start, alloc_size, target_segment->address);
-}
-
-
-void map_segments(const unsigned short int programm_header_size){
-
-  // loading
-  void* VIRTUAL_MEMORY = mmap(NULL,phdr->p_memsz,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_ANONYMOUS|MAP_PRIVATE,0,0);
-
-  if(VIRTUAL_MEMORY==MAP_FAILED){
-    printf("Error Mapping memory\n");
-    exit(1);
-  }
-
-  lseek(fd,phdr->p_offset,SEEK_SET);
-
-  // Reading data
-  if (read(fd, VIRTUAL_MEMORY, phdr->p_filesz) != phdr->p_filesz) {
-    printf("Error reading segment data\n");
-    exit(1);
-  }
-
-  // Zero out the rest of the memory if the segment is larger than the file size
-  if (phdr->p_filesz < phdr->p_memsz) {
-    memset((char*)VIRTUAL_MEMORY + phdr->p_filesz, 0, phdr->p_memsz - phdr->p_filesz);
-  }
-
-  printf("PT_LOAD Segment loaded at address %p\n", VIRTUAL_MEMORY);
-
-  // loading done
-
-  if (ehdr->e_entry >= phdr->p_vaddr && ehdr->e_entry < phdr->p_vaddr + phdr->p_memsz) {
-    size_t offset_inside_segment = ehdr->e_entry - phdr->p_vaddr;
-    entry_pt_addr = (char*) VIRTUAL_MEMORY + offset_inside_segment;
-    printf("Entry point located at address %p\n", entry_pt_addr);
-  }
-
-  // free(VIRTUAL_MEMORY);
-  // munmap(VIRTUAL_MEMORY,phdr->p_memsz);
-
-  segments_for_cleanup[seg_ptr].address = VIRTUAL_MEMORY;
-  // segments_for_cleanup[seg_ptr].space = phdr->p_memsz;
-  seg_ptr++;
 }
 
 /*
@@ -196,56 +141,25 @@ void load_and_run_elf(char** elf_file) {
   for(int i = 0;i<ehdr->e_phnum;i++){
 
     read_programm_header(i,programm_header_size);
-
-    // now loading PT_LOAD
-
-    if(phdr->p_type==PT_LOAD){
-      // map_segments(programm_header_size);
-
-      // Virtual address where the segment should be loaded
-      void *segment_vaddr = (void *)phdr->p_vaddr;
-      
-      // Size of the segment in memory
-      size_t segment_size = phdr->p_memsz;
-
-      // Size of the segment in the file
-      size_t file_size = phdr->p_filesz;
-
-      printf("Segment virtual address: %p\n", segment_vaddr);
-      printf("Segment size in memory: %zu bytes\n", segment_size);
-      printf("Segment size in file: %zu bytes\n", file_size);
-
-      segments_for_cleanup[seg_ptr].address = segment_vaddr;
-      segments_for_cleanup[seg_ptr].segment_size = segment_size;
-      segments_for_cleanup[seg_ptr].file_size = file_size;
-      segments_for_cleanup[seg_ptr].allocated = 0;
-      segments_for_cleanup[seg_ptr].file_data = phdr->p_offset;
-
-      seg_ptr++;
-
-      if (ehdr->e_entry >= phdr->p_vaddr && ehdr->e_entry < phdr->p_vaddr + phdr->p_memsz) {
-        size_t offset_inside_segment = ehdr->e_entry - phdr->p_vaddr;
-        entry_pt_addr = (char*) VIRTUAL_MEMORY + offset_inside_segment;
-        printf("Entry point located at address %p\n", entry_pt_addr);
-      }
-
-      // Now you can use `segment_vaddr` and `segment_size` for mapping the segment
-    }
+    segments[ptr] = phdr;
+    ptr++;
     
     // not freeing this in loader_cleanup as pointer referencing a new address for every programm header
     free(phdr);
   }
 
-  if (entry_pt_addr != NULL) {
-        // Typecast the entry_point_address to a function pointer and call it
-        int (*entry_func)() = (int (*)())entry_pt_addr;
-        int result = entry_func();
-        printf("--------------------------------------------\n");
-        printf("User _start return value = %d\n", result);
-        printf("--------------------------------------------\n");
-    } else {
-        printf("Error: Entry point not found in any segment\n");
-    }
+  //typecasting the entry point of the start function
+  Elf32_Addr entry_pt = ehdr -> e_entry;
+
+  if(entry_pt!=NULL){
+    int (*_start)() = (int(*)())entry_pt;
+    int result = _start();
+    printf("--------------------------------------------\n");
+    printf("User _start return value = %d\n", result);
+    printf("--------------------------------------------\n");
+  }else{
+    printf("Error: Entry point not found in any segment\n");
+  }
 }
 
 void setup_signal_handler() {
@@ -258,22 +172,11 @@ void setup_signal_handler() {
     perror("Failed to set up SIGSEGV handler");
     exit(EXIT_FAILURE);
   }
-
-  // handle SIGINT for graceful exits on Ctrl+C
-  signal(SIGINT, [](int signum){
-    loader_cleanup();
-    exit(0);
-  });
 }
 
 int main(int argc, char** argv) {
 
   setup_signal_handler();
-
-  /*printf("Number of arguments: %d\n", argc);
-  for (int i = 0; i < argc; i++) {
-    printf("Argument %d: %s\n", i, argv[i]);
-  }*/
 
   if(argc != 2) {
     printf("Usage: %s <ELF Executable> \nYou need to provide ELF File as an argument\n",argv[0]);
@@ -282,42 +185,25 @@ int main(int argc, char** argv) {
     ELF_file_name = argv[1];
   }
 
-  // printf("%s\n",ELF_file_name);
-
-  // 1. carry out necessary checks on the input ELF file
-
-  // Checking if file exists
   if (access(ELF_file_name, F_OK) != 0) {
     printf("Error: File %s does not exist.\n", ELF_file_name);
     exit(1);
   }
 
-	// Checking if we have access to read said file
   fd = open(ELF_file_name, O_RDONLY);
   if (fd < 0) {
  	printf("Error opening file\n");
  	exit(1);
   }
 
-  // Checking if the said file is an ELF and reading ELF header
-
   read_elf_header();  
-
-  // 2. passing it to the loader for carrying out the loading/execution
-  // Now if we come so far, we are sure that we have an ELF!
-
-  // printf("YIPEE! [File is valid and ELF header is loaded ] (for debugging purposes)\n");
   load_and_run_elf(argv);
-  
-  // 3. invoke the cleanup routine inside the loader  
   loader_cleanup();
 
   if (close(fd) < 0) {
 	printf("Error closing file\n");
 	exit(1);
   }
-
-  // free(ehdr);
 
   return 0;
 }
