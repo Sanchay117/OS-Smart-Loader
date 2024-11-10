@@ -32,6 +32,8 @@ int ptr = 0;
 
 int fd;
 void* entry_pt_addr;
+int page_faults = 0,page_allocations = 0;
+int internal_fragmentation = 0;
 
 // read ELF Header
 void read_elf_header(){
@@ -72,17 +74,6 @@ void read_programm_header(const int i,const unsigned short int programm_header_s
     printf("Error: Couldn't read program header\n");
     exit(1);
   }
-  
-  // printf("Program Header %d:\n", i);
-  // printf("  Type: %u\n", phdr->p_type);
-  // printf("  Offset: %u\n", phdr->p_offset);
-  // printf("  Virtual Address: %u\n", phdr->p_vaddr);
-  // printf("  File Size: %u\n", phdr->p_filesz);
-  // printf("  Memory Size: %u\n", phdr->p_memsz);
-  // printf("  Flags: %u\n", phdr->p_flags);
-  // printf("  Alignment: %u\n", phdr->p_align);
-
-  // printf("----------------------\n");
 }
 
 // Check if offset seeking was successful
@@ -94,38 +85,75 @@ void check_offset( off_t new_position ){
   }
 }
 
-void handle_page_fault(int signum,siginfo_t *sig,void* context){
-  printf("PAGE FAULT / SEG FAULT\n");
-  // no_of_faults++;
+void handle_page_fault(int signum, siginfo_t *sig, void* context) {
+  void *fault_addr = sig->si_addr;  // The fault address triggering the page fault
+  printf("PAGE FAULT / SEG FAULT at address: %p\n", fault_addr);
+  page_faults++;
+
+  // Iterate over segments to find which one covers this fault address
   for (int i = 0; i < ehdr->e_phnum; i++) {
-    if ((sig -> si_addr) >= (segments[i]->p_vaddr) && (sig->si_addr) < segments[i]->p_vaddr + segments[i]->p_memsz) {
-      printf("Fault address is : %p\n", sig->si_addr);
 
-      // Attempt to allocate memory using mmap
-      void* virtual_mem = mmap(sig->si_addr, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+    // printf("SEGPTR::::::%d\n",ptr);
 
-      if (virtual_mem == MAP_FAILED) {
-        // mmap failed
-        printf("mmap failed\n");
-        exit(1);
+    // printf("Program Header %d:\n", i);
+    // printf("  Type: %u\n", segments[i]->p_type);
+    // printf("  Offset: %u\n", segments[i]->p_offset);
+    // printf("  Virtual Address: %u\n", segments[i]->p_vaddr);
+    // printf("  File Size: %u\n", segments[i]->p_filesz);
+    // printf("  Memory Size: %u\n", segments[i]->p_memsz);
+    // printf("  Flags: %u\n", segments[i]->p_flags);
+    // printf("  Alignment: %u\n", segments[i]->p_align);
+
+    // printf("----------------------\n");
+
+    uintptr_t segment_start = (uintptr_t)segments[i]->p_vaddr;
+    uintptr_t segment_end = segment_start + segments[i]->p_memsz;
+
+    printf("Checking segment %d: start %p, end %p\n", i, (void*)segment_start, (void*)segment_end);
+
+    // Check if the fault address falls within this segment
+    if ((uintptr_t)fault_addr >= segment_start && (uintptr_t)fault_addr < segment_end) {
+      printf("Fault address %p found in segment %d\n", fault_addr, i);
+
+      // Align the fault address to page boundary for mmap
+      void *page_start = (void *)((uintptr_t)fault_addr & ~(PAGE_SIZE - 1));
+
+      // Attempt to allocate memory for this page
+      void *mapped_page = mmap(page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+      if (mapped_page == MAP_FAILED) {
+          perror("mmap failed");
+          exit(1);
       }
-      check_offset(lseek(fd, 0, SEEK_SET) );
-      check_offset(lseek(fd, segments[i]->p_offset, SEEK_SET));
-      ssize_t bytes_read = read(fd, virtual_mem, PAGE_SIZE);
 
-      printf("size of phdr segment is %d\n", phdr[i].p_memsz);
-      printf("Number of bytes read: %d\n", bytes_read);
+      page_allocations++;
+
+      // Seek to the appropriate offset in the ELF file
+      size_t offset_within_segment = (uintptr_t)page_start - segment_start;
+      check_offset(lseek(fd, segments[i]->p_offset + offset_within_segment, SEEK_SET));
+
+      // Read the data into the newly mapped memory page
+      ssize_t bytes_read = read(fd, mapped_page, PAGE_SIZE);
+      printf("Size of segment %d is %zu bytes\n", i, segments[i]->p_memsz);
+      printf("Number of bytes read into page at %p: %zd\n", page_start, bytes_read);
 
       if (bytes_read < 0) {
-        printf("Less than 0 bytes read\n");
-        exit(1);
+          perror("Failed to read segment data");
+          exit(1);
       }
-      // add_fragmentation(bytes_read);
-      // pages++;
-      break;
+
+      // Check for internal fragmentation
+      if (segments[i]->p_filesz < PAGE_SIZE) {
+        int unused_bytes = PAGE_SIZE - segments[i]->p_filesz;
+        internal_fragmentation += unused_bytes;
+        printf("Internal fragmentation for this page: %d bytes\n", unused_bytes);
+      }
+
+      break;  // Fault handled, exit loop
     }
   }
 }
+
 
 /*
  * Load and run the ELF executable file
@@ -145,8 +173,23 @@ void load_and_run_elf(char** elf_file) {
     ptr++;
     
     // not freeing this in loader_cleanup as pointer referencing a new address for every programm header
-    free(phdr);
+    // free(phdr);
   }
+
+  // for(int i = 0;i<ehdr->e_phnum;i++){
+  //   phdr = segments[i];
+
+  //   printf("Program Header %d:\n", i);
+  //   printf("  Type: %u\n", phdr->p_type);
+  //   printf("  Offset: %u\n", phdr->p_offset);
+  //   printf("  Virtual Address: %u\n", phdr->p_vaddr);
+  //   printf("  File Size: %u\n", phdr->p_filesz);
+  //   printf("  Memory Size: %u\n", phdr->p_memsz);
+  //   printf("  Flags: %u\n", phdr->p_flags);
+  //   printf("  Alignment: %u\n", phdr->p_align);
+
+  //   printf("----------------------\n");
+  // }
 
   //typecasting the entry point of the start function
   Elf32_Addr entry_pt = ehdr -> e_entry;
@@ -156,6 +199,8 @@ void load_and_run_elf(char** elf_file) {
     int result = _start();
     printf("--------------------------------------------\n");
     printf("User _start return value = %d\n", result);
+    printf("--------------------------------------------\n");
+    printf("Page Faults:%d\nPage Allocations:%d\nInternal Fragmentations [in Bytes]:%d\n",page_faults,page_allocations,internal_fragmentation);
     printf("--------------------------------------------\n");
   }else{
     printf("Error: Entry point not found in any segment\n");
