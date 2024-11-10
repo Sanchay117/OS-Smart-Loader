@@ -1,4 +1,4 @@
-﻿###Contribution
+﻿### Contribution
 **Arshad**:Documentation, some error handling and number of page faults and calculation of internal fragmentation<br/>
 **Sanchay**: Rest Of The Loader
 
