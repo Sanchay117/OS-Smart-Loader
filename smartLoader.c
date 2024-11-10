@@ -12,6 +12,7 @@
 
 #define MAX_SEGMENTS 250
 #define PAGE_SIZE 4096
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 Elf32_Ehdr *ehdr; // pointer to ELF header struct
 Elf32_Phdr *phdr; // pointer to Programm header struct
@@ -107,6 +108,7 @@ void handle_page_fault(int signum, siginfo_t *sig, void* context) {
 
       // Align the fault address to page boundary for mmap
       void *page_start = (void *)((uintptr_t)fault_addr & ~(PAGE_SIZE - 1));
+      void *page_end = (void *)((uintptr_t)page_start + PAGE_SIZE);
 
       // Attempt to allocate memory for this page
       void *mapped_page = mmap(page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -132,10 +134,11 @@ void handle_page_fault(int signum, siginfo_t *sig, void* context) {
           exit(1);
       }
 
-      if (segments[i]->p_filesz < PAGE_SIZE) {
-        int unused_bytes = PAGE_SIZE - segments[i]->p_filesz;
-        internal_fragmentation += unused_bytes;
-        // printf("Internal fragmentation for this page: %d bytes\n", unused_bytes);
+      size_t used_in_page;
+      if ((uintptr_t)page_end >= segment_end) {
+        // This is the last page of the segment
+        used_in_page = segment_end - (uintptr_t)page_start;
+        internal_fragmentation += PAGE_SIZE - used_in_page;
       }
 
       break;
