@@ -64,6 +64,10 @@ void loader_cleanup() {
       break;
     }
   }
+
+  for(int i = 0;i<ptr;i++){
+    free(segments[i]);
+  }
 }
 
 void read_programm_header(const int i,const unsigned short int programm_header_size){
@@ -86,34 +90,20 @@ void check_offset( off_t new_position ){
 }
 
 void handle_page_fault(int signum, siginfo_t *sig, void* context) {
-  void *fault_addr = sig->si_addr;  // The fault address triggering the page fault
-  printf("PAGE FAULT / SEG FAULT at address: %p\n", fault_addr);
+  void *fault_addr = sig->si_addr;
   page_faults++;
 
   // Iterate over segments to find which one covers this fault address
   for (int i = 0; i < ehdr->e_phnum; i++) {
 
-    // printf("SEGPTR::::::%d\n",ptr);
-
-    // printf("Program Header %d:\n", i);
-    // printf("  Type: %u\n", segments[i]->p_type);
-    // printf("  Offset: %u\n", segments[i]->p_offset);
-    // printf("  Virtual Address: %u\n", segments[i]->p_vaddr);
-    // printf("  File Size: %u\n", segments[i]->p_filesz);
-    // printf("  Memory Size: %u\n", segments[i]->p_memsz);
-    // printf("  Flags: %u\n", segments[i]->p_flags);
-    // printf("  Alignment: %u\n", segments[i]->p_align);
-
-    // printf("----------------------\n");
-
     uintptr_t segment_start = (uintptr_t)segments[i]->p_vaddr;
     uintptr_t segment_end = segment_start + segments[i]->p_memsz;
 
-    printf("Checking segment %d: start %p, end %p\n", i, (void*)segment_start, (void*)segment_end);
+    // printf("Checking segment %d: start %p, end %p\n", i, (void*)segment_start, (void*)segment_end);
 
     // Check if the fault address falls within this segment
     if ((uintptr_t)fault_addr >= segment_start && (uintptr_t)fault_addr < segment_end) {
-      printf("Fault address %p found in segment %d\n", fault_addr, i);
+      // printf("Fault address %p found in segment %d\n", fault_addr, i);
 
       // Align the fault address to page boundary for mmap
       void *page_start = (void *)((uintptr_t)fault_addr & ~(PAGE_SIZE - 1));
@@ -134,22 +124,21 @@ void handle_page_fault(int signum, siginfo_t *sig, void* context) {
 
       // Read the data into the newly mapped memory page
       ssize_t bytes_read = read(fd, mapped_page, PAGE_SIZE);
-      printf("Size of segment %d is %zu bytes\n", i, segments[i]->p_memsz);
-      printf("Number of bytes read into page at %p: %zd\n", page_start, bytes_read);
+      // printf("Size of segment %d is %zu bytes\n", i, segments[i]->p_memsz);
+      // printf("Number of bytes read into page at %p: %zd\n", page_start, bytes_read);
 
       if (bytes_read < 0) {
           perror("Failed to read segment data");
           exit(1);
       }
 
-      // Check for internal fragmentation
       if (segments[i]->p_filesz < PAGE_SIZE) {
         int unused_bytes = PAGE_SIZE - segments[i]->p_filesz;
         internal_fragmentation += unused_bytes;
-        printf("Internal fragmentation for this page: %d bytes\n", unused_bytes);
+        // printf("Internal fragmentation for this page: %d bytes\n", unused_bytes);
       }
 
-      break;  // Fault handled, exit loop
+      break;
     }
   }
 }
@@ -162,7 +151,6 @@ void handle_page_fault(int signum, siginfo_t *sig, void* context) {
 void load_and_run_elf(char** elf_file) {
 
   char* ELF_file_name = elf_file[1];
-  // printf("%s %d\n",ELF_file_name,fd);
   
   unsigned short int programm_header_size = ehdr->e_phentsize;
   
@@ -171,27 +159,8 @@ void load_and_run_elf(char** elf_file) {
     read_programm_header(i,programm_header_size);
     segments[ptr] = phdr;
     ptr++;
-    
-    // not freeing this in loader_cleanup as pointer referencing a new address for every programm header
-    // free(phdr);
   }
 
-  // for(int i = 0;i<ehdr->e_phnum;i++){
-  //   phdr = segments[i];
-
-  //   printf("Program Header %d:\n", i);
-  //   printf("  Type: %u\n", phdr->p_type);
-  //   printf("  Offset: %u\n", phdr->p_offset);
-  //   printf("  Virtual Address: %u\n", phdr->p_vaddr);
-  //   printf("  File Size: %u\n", phdr->p_filesz);
-  //   printf("  Memory Size: %u\n", phdr->p_memsz);
-  //   printf("  Flags: %u\n", phdr->p_flags);
-  //   printf("  Alignment: %u\n", phdr->p_align);
-
-  //   printf("----------------------\n");
-  // }
-
-  //typecasting the entry point of the start function
   Elf32_Addr entry_pt = ehdr -> e_entry;
 
   if(entry_pt!=NULL){
