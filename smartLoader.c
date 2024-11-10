@@ -112,8 +112,8 @@ void handle_page_fault(int signum, siginfo_t *sig, void* context) {
       void *mapped_page = mmap(page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
       if (mapped_page == MAP_FAILED) {
-          perror("mmap failed");
-          exit(1);
+        perror("mmap failed");
+        exit(1);
       }
 
       page_allocations++;
@@ -169,7 +169,7 @@ void load_and_run_elf(char** elf_file) {
     printf("--------------------------------------------\n");
     printf("User _start return value = %d\n", result);
     printf("--------------------------------------------\n");
-    printf("Page Faults:%d\nPage Allocations:%d\nInternal Fragmentations [in Bytes]:%d\n",page_faults,page_allocations,internal_fragmentation);
+    printf("Page Faults:%d\nPage Allocations:%d\nInternal Fragmentations [in KB]:%.4f\n",page_faults,page_allocations,internal_fragmentation/1024.0);
     printf("--------------------------------------------\n");
   }else{
     printf("Error: Entry point not found in any segment\n");
