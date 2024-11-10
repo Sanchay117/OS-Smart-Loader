@@ -1,6 +1,6 @@
-﻿**Contribution:**
-Arhsad:Documentation, some error handling and number of page faults and calculation of internal fragmentation
-Sanchay: Rest Of The Loader
+﻿###**Contribution**
+**Arshad**:Documentation, some error handling and number of page faults and calculation of internal fragmentation<br/>
+**Sanchay**: Rest Of The Loader
 
 **Github Repository: [Sanchay117/OS-Smart-Loader: Assignment 4 Of Operating Systems Course](https://github.com/Sanchay117/OS-Smart-Loader)**
 
